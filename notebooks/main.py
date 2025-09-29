@@ -4,7 +4,6 @@ nasa_event_risk.py
 Fetch NASA POWER (daily/hourly) time series for a user-specified location and date range,
 then compute historical-likelihood style analyses for outdoor activity risk.
 
-- Handles future dates by using past 10 years of data to predict future values.
 - If start_date == end_date -> hourly endpoint is used.
 - Otherwise -> daily endpoint is used.
 
@@ -16,8 +15,9 @@ from typing import Optional, Dict, Any, List, Tuple
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime, date, timedelta
+from datetime import datetime
 import json
+import csv
 import os
 import matplotlib.pyplot as plt
 
@@ -37,6 +37,7 @@ DEFAULT_THRESHOLDS = {
     "fishing": {"temp": [10, 30], "wind speed": [0, 25], "humidity": [30, 80], "precipitation": [0, 3]},
 }
 
+# Color thresholds for comfort percentage
 COLOR_THRESHOLDS = [
     (100, "green", "Comfortable"),
     (75, "yellow", "Safe"),
@@ -44,8 +45,9 @@ COLOR_THRESHOLDS = [
     (0, "red", "Risky"),
 ]
 
+
 # ------------------------
-# Helper functions
+# Small helpers
 # ------------------------
 def choose_color_and_suggestion(pct: float) -> Tuple[str, str]:
     for thr, color, suggestion in COLOR_THRESHOLDS:
@@ -53,11 +55,16 @@ def choose_color_and_suggestion(pct: float) -> Tuple[str, str]:
             return color, suggestion
     return "red", "Risky"
 
+
 def make_bar(pct: float, length: int = 20) -> str:
     filled = int((pct / 100) * length)
     filled = max(0, min(filled, length))
     return "█" * filled + "░" * (length - filled) + f" {pct:.1f}%"
 
+
+# ------------------------
+# Discomfort flags helpers
+# ------------------------
 def discomfort_flags_from_values(values: Dict[str, float], thresholds: Dict[str, List[float]]) -> List[str]:
     flags = []
     if "temp" in values:
@@ -76,22 +83,39 @@ def discomfort_flags_from_values(values: Dict[str, float], thresholds: Dict[str,
             flags.append("very uncomfortable")
     return flags or ["good conditions"]
 
+
 def suggestion_text_from_flags(flags: List[str]) -> str:
     if flags == ["good conditions"]:
         return "Conditions look favorable for your activity."
     return "Conditions may be: " + ", ".join(flags)
 
+
 # ------------------------
-# NASA POWER API fetcher
+# NASA POWER API fetcher (hourly if single-day, daily otherwise)
 # ------------------------
 def fetch_power_data(lat: float, lon: float, start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    Fetch POWER data from NASA:
+    - Uses the hourly endpoint if start_date == end_date
+    - Otherwise uses the daily endpoint.
+
+    Returns a DataFrame indexed by datetime with columns renamed to friendly names:
+    'temp', 'precipitation', 'wind speed', 'humidity' (only those present in response).
+    """
+    # validate dates
     try:
         sd = datetime.strptime(start_date, "%Y-%m-%d")
         ed = datetime.strptime(end_date, "%Y-%m-%d")
     except Exception as e:
         raise ValueError("start_date and end_date must be 'YYYY-MM-DD'") from e
 
-    endpoint = "hourly" if sd.date() == ed.date() else "daily"
+    # choose endpoint
+    if sd.date() == ed.date():
+        # single-day -> hourly
+        endpoint = "hourly"
+    else:
+        endpoint = "daily"
+
     base = "https://power.larc.nasa.gov/api/temporal"
     params_codes = ",".join([v["code"] for v in NASA_VARIABLES.values()])
     start_str = start_date.replace("-", "")
@@ -106,51 +130,35 @@ def fetch_power_data(lat: float, lon: float, start_date: str, end_date: str) -> 
     if not params:
         return pd.DataFrame()
 
+    # build DataFrame from parameter dicts: keys are codes -> dict(date->value)
+    # Convert to DataFrame by aligning on date keys
     df = pd.DataFrame({code: pd.Series(vals) for code, vals in params.items()})
+    # index are date strings: try to parse intelligently
+    # daily typically 'YYYYMMDD', hourly often 'YYYYMMDDHH' (or with min/sec)
     try:
         sample_idx = next(iter(df.index))
-        if len(sample_idx) == 8:
+        if len(sample_idx) == 8:  # YYYYMMDD
             df.index = pd.to_datetime(df.index, format="%Y%m%d")
         else:
+            # Let pandas infer (works for many formats, including hourly-ish)
             df.index = pd.to_datetime(df.index, infer_datetime_format=True, errors="coerce")
     except Exception:
         df.index = pd.to_datetime(df.index, infer_datetime_format=True, errors="coerce")
 
+    # Map parameter codes to friendly keys (if present)
     codes_to_keys = {v["code"]: k for k, v in NASA_VARIABLES.items()}
     col_map = {col: codes_to_keys[col] for col in df.columns if col in codes_to_keys}
     df = df.rename(columns=col_map)
+
+    # Keep only our known variables (in case API returned extras)
     df = df[[k for k in NASA_VARIABLES.keys() if k in df.columns]].copy()
+
+    # Clean sentinel / missing values
     df = df.replace(-999.0, np.nan).dropna(how="any")
+
+    # If the response index has timezone-naive hourly timestamps, no timezone conversion is done.
     return df
 
-# ------------------------
-# Historical & future prediction
-# ------------------------
-def fetch_historical_10yrs(lat, lon, start_date, end_date):
-    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-    dfs = []
-    for year in range(start_dt.year - 10, start_dt.year):
-        sd = start_dt.replace(year=year)
-        ed = end_dt.replace(year=year)
-        df_hist = fetch_power_data(lat, lon, sd.strftime("%Y-%m-%d"), ed.strftime("%Y-%m-%d"))
-        if not df_hist.empty:
-            dfs.append(df_hist)
-    if dfs:
-        return pd.concat(dfs)
-    return pd.DataFrame()
-
-def predict_future(df_hist, start_date, end_date):
-    if df_hist.empty:
-        return pd.DataFrame()
-    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-    future_dates = pd.date_range(start=start_date, end=end_date)
-    pred = {}
-    for col in df_hist.columns:
-        doy_mean = df_hist.groupby(df_hist.index.dayofyear)[col].mean()
-        pred[col] = [float(doy_mean[dt.dayofyear]) for dt in future_dates]
-    return pd.DataFrame(pred, index=future_dates)
 
 # ------------------------
 # Exceedance & trend utilities
@@ -161,6 +169,7 @@ def exceedance_probability(series: pd.Series, threshold: float, direction: str =
     if direction == "above":
         return float((series > threshold).sum()) / len(series)
     return float((series < threshold).sum()) / len(series)
+
 
 def long_term_trend(series: pd.Series) -> Dict[str, Any]:
     if series.empty:
@@ -180,8 +189,9 @@ def long_term_trend(series: pd.Series) -> Dict[str, Any]:
     r2 = 1 - ss_res / ss_tot if ss_tot != 0 else None
     return {"slope": float(slope), "intercept": float(intercept), "r2": float(r2) if r2 is not None else None, "n": len(yearly)}
 
+
 # ------------------------
-# Analysis
+# Analysis (quartiles, IQR, ranking, mean, flags, exceedances, trends)
 # ------------------------
 def analyze_period(df_period: pd.DataFrame, activity: str, thresholds: Dict[str, Dict[str, List[float]]],
                    params: List[str]) -> Dict[str, Any]:
@@ -190,16 +200,20 @@ def analyze_period(df_period: pd.DataFrame, activity: str, thresholds: Dict[str,
     if not params_present:
         return {"error": "No requested variables present in data"}
 
-    quartiles = {p: {"Q1": float(df_period[p].quantile(0.25)),
-                     "Q3": float(df_period[p].quantile(0.75))}
-                 for p in params_present}
+    # Quartiles (per-variable)
+    quartiles = {}
+    for p in params_present:
+        s = df_period[p]
+        quartiles[p] = {"Q1": float(s.quantile(0.25)), "Q3": float(s.quantile(0.75))}
 
+    # Filter to rows where all variables are within their per-variable IQR (intersection)
     mask = pd.Series(True, index=df_period.index)
     for p in params_present:
         q1, q3 = quartiles[p]["Q1"], quartiles[p]["Q3"]
         mask &= (df_period[p] >= q1) & (df_period[p] <= q3)
     df_iqr = df_period.loc[mask]
 
+    # Score each IQR row: +1 within activity threshold, -1 outside
     scores = {}
     n = len(params_present)
     min_possible = -n
@@ -230,15 +244,30 @@ def analyze_period(df_period: pd.DataFrame, activity: str, thresholds: Dict[str,
     ranked = dict(sorted(scores.items(), key=lambda kv: kv[1]["comfort_score_pct"], reverse=True))
     best = dict(list(ranked.items())[:2])
     worst = dict(list(ranked.items())[-2:])
+
+    # Mean analysis across the entire requested period (not restricted to IQR)
     means = {p: float(df_period[p].mean()) for p in params_present}
-    raw_score_mean = sum(1 if th[p][0] <= means[p] <= th[p][1] else -1 for p in params_present)
-    pct_mean = round(((raw_score_mean - min_possible) / (max_possible - min_possible)) * 100, 1)
+    raw_score_mean = 0
+    for p in params_present:
+        min_val, max_val = th[p]
+        val = means[p]
+        raw_score_mean += 1 if (min_val <= val <= max_val) else -1
+    pct_mean = ((raw_score_mean - min_possible) / (max_possible - min_possible)) * 100
+    pct_mean = round(pct_mean, 1)
     color_mean, _ = choose_color_and_suggestion(pct_mean)
     flags_mean = discomfort_flags_from_values(means, th)
     suggestion_mean = suggestion_text_from_flags(flags_mean)
-    exceedances = {p: {"prob_below_low_pct": round(exceedance_probability(df_period[p], th[p][0], "below")*100,1),
-                       "prob_above_high_pct": round(exceedance_probability(df_period[p], th[p][1], "above")*100,1)}
-                   for p in params_present}
+
+    # Exceedance probabilities for thresholds
+    exceedances = {}
+    for p in params_present:
+        low, high = th[p]
+        exceedances[p] = {
+            "prob_below_low_pct": round(exceedance_probability(df_period[p], low, direction="below") * 100, 1),
+            "prob_above_high_pct": round(exceedance_probability(df_period[p], high, direction="above") * 100, 1),
+        }
+
+    # Trends
     trends = {p: long_term_trend(df_period[p]) for p in params_present}
 
     return {
@@ -261,8 +290,9 @@ def analyze_period(df_period: pd.DataFrame, activity: str, thresholds: Dict[str,
         "trends_per_variable": trends,
     }
 
+
 # ------------------------
-# Export & plotting
+# Exports & plots (optional)
 # ------------------------
 def export_results_to_json(results: dict, outpath: str) -> None:
     meta = {
@@ -273,6 +303,7 @@ def export_results_to_json(results: dict, outpath: str) -> None:
     out = {"metadata": meta, "results": results}
     with open(outpath, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
+
 
 def plot_time_series(df_period: pd.DataFrame, params: List[str], title: Optional[str] = None, savepath: Optional[str] = None):
     n = len(params)
@@ -291,8 +322,9 @@ def plot_time_series(df_period: pd.DataFrame, params: List[str], title: Optional
         plt.show()
     plt.close(fig)
 
+
 # ------------------------
-# Run analysis
+# Top-level run
 # ------------------------
 def run_analysis(activity: str,
                  lat: float,
@@ -303,11 +335,19 @@ def run_analysis(activity: str,
                  thresholds: Optional[Dict[str, Dict[str, List[float]]]] = None,
                  export_dir: Optional[str] = None,
                  make_plots: bool = False) -> Dict[str, Any]:
+    """
+    Unified entry point.
 
-    today_dt = date.today()
-    sd_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
-    ed_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
-    is_future = sd_dt > today_dt
+    - activity: e.g. "hiking"
+    - lat, lon: floats (user-provided)
+    - start_date, end_date: 'YYYY-MM-DD'
+    - variables: subset of NASA_VARIABLES keys (default: all)
+    - thresholds: override (default DEFAULT_THRESHOLDS)
+    - export_dir: optional path to save JSON/plots
+    - make_plots: whether to produce time-series plot and save (requires matplotlib)
+    """
+    if not (start_date and end_date):
+        raise ValueError("start_date and end_date required in 'YYYY-MM-DD' format")
 
     params = variables or list(NASA_VARIABLES.keys())
     params = [p for p in params if p in NASA_VARIABLES]
@@ -316,18 +356,18 @@ def run_analysis(activity: str,
 
     th_map = thresholds or DEFAULT_THRESHOLDS
 
-    if is_future:
-        df_hist = fetch_historical_10yrs(lat, lon, start_date, end_date)
-        if df_hist.empty:
-            return {"error": "No historical data available for future prediction."}
-        df = predict_future(df_hist, start_date, end_date)
-    else:
-        df = fetch_power_data(lat, lon, start_date, end_date)
-        if df.empty:
-            return {"error": "No data returned for the requested location/date."}
+    # Fetch data (automatically picks hourly if single-day)
+    df = fetch_power_data(lat, lon, start_date, end_date)
+    if df.empty:
+        return {"error": "No data returned for the requested location/date. Check the coordinates, variables availability, and POWER API limits."}
 
+    # If some requested variables are missing in the returned df, warn in the result
     missing = [p for p in params if p not in df.columns]
-    params_present = [p for p in params if p in df.columns]
+    if missing:
+        # we will analyze only present variables
+        params_present = [p for p in params if p in df.columns]
+    else:
+        params_present = params
 
     results = analyze_period(df[params_present], activity, th_map, params_present)
 
@@ -355,3 +395,26 @@ def run_analysis(activity: str,
             plot_time_series(df[params_present], params_present, title=f"{activity} @ ({lat},{lon}) {start_date}..{end_date}")
 
     return top
+
+
+# ------------------------
+# Example usage
+# ------------------------
+if __name__ == "__main__":
+    # Replace these with user input values in real usage
+    example_activity = "hiking"
+    example_lat, example_lon = 23.8103, 90.4125  # Dhaka
+    example_start, example_end = "2020-06-01", "2020-06-10"  # multi-day -> daily analysis
+
+    result = run_analysis(
+        activity=example_activity,
+        lat=example_lat,
+        lon=example_lon,
+        start_date=example_start,
+        end_date=example_end,
+        variables=["temp", "precipitation", "wind speed", "humidity"],
+        export_dir=None,
+        make_plots=False
+    )
+
+    print(json.dumps(result, indent=2))
