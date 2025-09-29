@@ -29,13 +29,16 @@ class ActivityRequest(BaseModel):
     origin: Location
     destination: Location
 
-class ActivityRequest(BaseModel):
-    date_range: DateRange
-    activities: List[str]
-    location: Location
-
 
 @router.post("/activity", summary="Analyse Activity Weather")
 def analyse_activity_weather(request: ActivityRequest):
     data = request.model_dump()
-    return analysis(data)
+    return analysis(
+        origin_lat=data['origin']['lat'],
+        origin_lon=data['origin']['lon'],
+        dest_lat=data['destination']['lat'],
+        dest_lon=data['destination']['lon'],
+        start_date=data['date_range']['start'],
+        end_date=data['date_range']['end'],
+        activities=data.get('activities')
+    )

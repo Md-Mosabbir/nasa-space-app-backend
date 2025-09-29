@@ -1,4 +1,4 @@
-from ..utils.power_api import fetch_power_api 
+from ..utils.power_api import fetch_power_api
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -177,6 +177,45 @@ def compute_statistics(dest_df, origin_stats=None):
 
     return stats
 
+def compute_risks(destination_stats, activity_weight=None):
+    """
+    Compute risk scores for hot, cold, rain, and wind.
+    If activity_weight is provided, risks are adjusted per activity.
+
+    Args:
+        destination_stats (dict): Output from compute_statistics
+        activity_weight (float, optional): activity-specific weight [0,1]
+
+    Returns:
+        dict: risk scores (0–100)
+    """
+    T_mean = destination_stats.get('T2M_mean', 25)
+    DI_mean = destination_stats.get('DI_mean', 25)
+    precip_prob = destination_stats.get('precip_prob', 0)
+    wind_mean = destination_stats.get('wind_mean', 2)
+
+    # Hot/cold thresholds
+    HOT_THRESHOLD = 30.0
+    COLD_THRESHOLD = 18.0
+
+    hot_risk = int(np.clip((T_mean - 25) / (HOT_THRESHOLD - 25) * 100, 0, 100))
+    cold_risk = int(np.clip((25 - T_mean) / (25 - COLD_THRESHOLD) * 100, 0, 100))
+    rain_risk = int(np.clip(precip_prob * 100, 0, 100))
+    wind_risk = int(np.clip(wind_mean / 15 * 100, 0, 100))
+
+    # Adjust by activity weight if provided (lower weight = higher perceived risk)
+    if activity_weight is not None:
+        hot_risk = int(hot_risk * (1 - activity_weight))
+        cold_risk = int(cold_risk * (1 - activity_weight))
+        rain_risk = int(rain_risk * (1 - activity_weight))
+        wind_risk = int(wind_risk * (1 - activity_weight))
+
+    return {
+        "hot_risk": hot_risk,
+        "cold_risk": cold_risk,
+        "rain_risk": rain_risk,
+        "wind_risk": wind_risk
+    }
 
 
 # ----------------- Activity Weight Function -----------------
@@ -291,17 +330,32 @@ def compute_comfort_index(destination_stats, activity_weight, adaptation_penalty
     }
 def analysis(origin_lat, origin_lon, dest_lat, dest_lon, start_date, end_date, activities=None):
     """
-    Run full climate + activity comfort analysis.
-    
+    Run full climate + activity comfort analysis and return structured JSON.
+    Each activity now has its own risks based on activity weight.
+
     Args:
         origin_lat, origin_lon: User's origin coordinates
         dest_lat, dest_lon: Destination coordinates
         start_date, end_date: YYYYMMDD
         activities (list): List of activity strings (optional)
-    
+
     Returns:
-        dict: {activity: comfort_index_dict, ...}
+        dict: Structured JSON including origin, destination, activities, meta
     """
+
+    def convert_numpy(obj):
+        """Recursively convert NumPy types to Python native types for JSON."""
+        if isinstance(obj, dict):
+            return {k: convert_numpy(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_numpy(x) for x in obj]
+        elif isinstance(obj, (np.integer,)):
+            return int(obj)
+        elif isinstance(obj, (np.floating,)):
+            return float(obj)
+        else:
+            return obj
+
     if activities is None:
         activities = ['fishing', 'hiking', 'festival', 'generic']
 
@@ -313,16 +367,43 @@ def analysis(origin_lat, origin_lon, dest_lat, dest_lon, start_date, end_date, a
     origin_stats = compute_statistics(origin_df) if not origin_df.empty else None
     dest_stats = compute_statistics(dest_df, origin_stats=origin_stats)
 
-    results = {}
-
-    # 3️⃣ Compute activity weights and comfort indices
+    # 3️⃣ Compute activity weights, comfort indices, and per-activity risks
+    activities_dict = {}
     for activity in activities:
         weight = activity_weights(dest_stats, activity)
-        adaptation_penalty = 0.2  # example, could be dynamic later
+        adaptation_penalty = 0.2  # example, can be dynamic
         comfort_index = compute_comfort_index(dest_stats, weight, adaptation_penalty)
-        results[activity] = comfort_index
+        activity_risks = compute_risks(dest_stats, activity_weight=weight)
+        activities_dict[activity] = {
+            "weight": weight,
+            "adaptation_penalty": adaptation_penalty,
+            "comfort_index": comfort_index,
+            "risks": activity_risks
+        }
 
-    return results
+    # 4️⃣ Build structured JSON
+    result_json = {
+        "origin": {
+            "latitude": origin_lat,
+            "longitude": origin_lon,
+            "statistics": origin_stats
+        },
+        "destination": {
+            "latitude": dest_lat,
+            "longitude": dest_lon,
+            "statistics": dest_stats,
+        },
+        "activities": activities_dict,
+        "meta": {
+            "start_date": start_date,
+            "end_date": end_date,
+            "historical_years": HISTORICAL_YEARS,
+            "notes": "DI calculated using NASA POWER data; missing precipitation treated as 0"
+        }
+    }
+
+    # ✅ Convert all NumPy types to native Python types
+    return convert_numpy(result_json)
 
 
 # ----------------- Multi-Scenario Test Block -----------------
