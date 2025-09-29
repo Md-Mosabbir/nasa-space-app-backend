@@ -19,8 +19,15 @@ class DateRange(BaseModel):
     end: str
 
 class Location(BaseModel):
+    name: str | None = None  # optional place name
     lat: float
     lon: float
+
+class ActivityRequest(BaseModel):
+    date_range: DateRange
+    activities: List[str]
+    origin: Location
+    destination: Location
 
 class ActivityRequest(BaseModel):
     date_range: DateRange
@@ -32,5 +39,3 @@ class ActivityRequest(BaseModel):
 def analyse_activity_weather(request: ActivityRequest):
     data = request.model_dump()
     return analysis(data)
-
-    
