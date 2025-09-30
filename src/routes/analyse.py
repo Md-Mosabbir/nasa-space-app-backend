@@ -2,7 +2,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import List
-from utils.power_api import fetch_power_api
+from utils.activities import list_activities
 from controllers.power_prediction import analysis
 
 router = APIRouter(
@@ -28,7 +28,10 @@ class ActivityRequest(BaseModel):
     activities: List[str]
     origin: Location
     destination: Location
-
+@router.get("/activities", summary="Get available activities")
+def get_activities():
+    """Return all available activities with metadata for frontend selection"""
+    return list_activities()
 
 @router.post("/activity", summary="Analyse Activity Weather")
 def analyse_activity_weather(request: ActivityRequest):

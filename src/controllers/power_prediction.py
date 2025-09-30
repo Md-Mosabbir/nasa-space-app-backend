@@ -1,4 +1,4 @@
-from ..utils.power_api import fetch_power_api
+from utils.power_api import fetch_power_api
 import pandas as pd
 import numpy as np
 from datetime import datetime

@@ -1,5 +1,7 @@
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
 from routes import analyse
+
 app = FastAPI(
     title="NASA Space App Backend",
     description="API for NASA Space App backend services.",
@@ -16,6 +18,21 @@ app = FastAPI(
             "description": "Endpoints for health checks."
         }
     ]
+)
+
+# ✅ CORS Middleware
+origins = [
+    "http://localhost:5173",  # Vite dev server
+    "http://localhost:3000",  # other ports if needed
+    "*",  # for testing only, allow all
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.get("/", summary="Root Endpoint")
