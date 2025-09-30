@@ -2,11 +2,11 @@ from utils.power_api import fetch_power_api
 import pandas as pd
 import numpy as np
 from datetime import datetime
+from utils.activities import list_activities
 
-PARAMETERS = ['T2M', 'PRECTOT', 'WS10M', 'RH2M']  # temp, precip, wind, humidity
 
 PARAMETERS = ['T2M', 'PRECTOT', 'WS10M', 'RH2M']  # temperature, precipitation, wind, humidity
-HISTORICAL_YEARS = 20  # number of years to fetch
+HISTORICAL_YEARS = 10  
 
 
 def fetch_origin_climate(lat, lon, start_date, end_date):
@@ -146,7 +146,7 @@ def compute_statistics(dest_df, origin_stats=None):
 
     stats = {}
 
-    # 1️⃣ Basic statistics for each climate variable
+
     for param in ['T2M', 'RH2M', 'WS10M', 'PRECTOTCORR']:
         stats[f"{param}_mean"] = dest_df[param].mean()
         stats[f"{param}_std"] = dest_df[param].std()
@@ -218,6 +218,68 @@ def compute_risks(destination_stats, activity_weight=None):
     }
 
 
+def compute_adaptation_penalty(origin_stats, dest_stats, activity=None):
+    """
+    Compute dynamic adaptation penalty based on user's origin vs destination.
+    
+    Args:
+        origin_stats (dict): Origin climate statistics
+        dest_stats (dict): Destination climate statistics
+        activity (str, optional): Activity type, can tweak sensitivity
+    
+    Returns:
+        float: Adaptation penalty [0,1]
+    """
+    if not origin_stats:
+        return 0.2  # fallback default
+
+    # 1️⃣ Differences
+    DI_diff = abs(dest_stats.get('DI_mean', 25) - origin_stats.get('DI_mean', 25))
+    T_diff = abs(dest_stats.get('T2M_mean', 25) - origin_stats.get('T2M_mean', 25))
+    RH_diff = abs(dest_stats.get('RH2M_mean', 50) - origin_stats.get('RH2M_mean', 50))
+    
+    # 2️⃣ Activity sensitivity (optional)
+    activity_sensitivity = {
+        'fishing': 1.0,
+        'hiking': 0.8,
+        'festival': 0.6,
+        'generic': 0.7
+    }
+    factor = activity_sensitivity.get(activity, 0.7)
+
+    # 3️⃣ Compute penalty
+    penalty = factor * (0.4 * DI_diff / 10 + 0.3 * T_diff / 10 + 0.3 * RH_diff / 20)
+    
+    # Clip to 0–1
+    return float(np.clip(penalty, 0, 1))
+
+# ----------------- Graph Generation -----------------
+def generate_graph_data(origin_df, dest_df):
+    """
+    Generate structured data for charting without losing any raw info.
+    Returns daily values for key parameters.
+    """
+    def df_to_chart(df):
+        if df.empty:
+            return {}
+        chart_data = {
+            "dates": df.index.strftime("%Y-%m-%d").tolist(),
+            "T2M": df['T2M'].tolist() if 'T2M' in df.columns else [],
+            "RH2M": df['RH2M'].tolist() if 'RH2M' in df.columns else [],
+            "WS10M": df['WS10M'].tolist() if 'WS10M' in df.columns else [],
+            # ✅ Corrected precipitation
+            "PRECTOT": df['PRECTOTCORR'].tolist() if 'PRECTOTCORR' in df.columns else [],
+            # Optional: Discomfort Index per day
+            "DI": (df['T2M'] - 0.55 * (1 - df['RH2M']/100) * (df['T2M'] - 14.5)).tolist()
+                  if 'T2M' in df.columns and 'RH2M' in df.columns else []
+        }
+        return chart_data
+
+    return {
+        "origin": df_to_chart(origin_df),
+        "destination": df_to_chart(dest_df)
+    }
+
 # ----------------- Activity Weight Function -----------------
 def activity_weights(destination_stats, activity):
     """
@@ -231,16 +293,10 @@ def activity_weights(destination_stats, activity):
     Returns:
         float: Activity weight [0, 1]
     """
-    # Define baseline preferences for each activity (T2M in °C, DI preferred range)
-    activity_baselines = {
-        'fishing': {'DI_mean': (18, 26)},       # mild and comfortable
-        'hiking': {'DI_mean': (15, 28)},        # broader comfort
-        'festival': {'DI_mean': (20, 30)},      # social outdoor events
-        'generic': {'DI_mean': (16, 28)},       # generic default
-    }
-
-    baseline = activity_baselines.get(activity, activity_baselines['generic'])
-    di_min, di_max = baseline['DI_mean']
+    # Pull activity DI preferences from utils.activities
+    activities_meta = list_activities()
+    baseline = activities_meta.get(activity, activities_meta.get('generic', {}))
+    di_min, di_max = baseline.get('DI_preferred', (16, 28))
 
     di = destination_stats.get('DI_mean', 25)
 
@@ -328,19 +384,20 @@ def compute_comfort_index(destination_stats, activity_weight, adaptation_penalty
         'color': color,
         'main_factors': main_factors
     }
-def analysis(origin_lat, origin_lon, dest_lat, dest_lon, start_date, end_date, activities=None):
+def analysis(origin_lat, origin_lon, dest_lat, dest_lon, start_date, end_date, activities=None, include_graphs=True):
     """
     Run full climate + activity comfort analysis and return structured JSON.
-    Each activity now has its own risks based on activity weight.
+    Optionally include daily data for charting (Chart.js, etc.) without extra fetches.
 
     Args:
         origin_lat, origin_lon: User's origin coordinates
         dest_lat, dest_lon: Destination coordinates
         start_date, end_date: YYYYMMDD
         activities (list): List of activity strings (optional)
+        include_graphs (bool): Whether to include daily data for charts
 
     Returns:
-        dict: Structured JSON including origin, destination, activities, meta
+        dict: Structured JSON including origin, destination, activities, meta, and optional graphs
     """
 
     def convert_numpy(obj):
@@ -356,8 +413,26 @@ def analysis(origin_lat, origin_lon, dest_lat, dest_lon, start_date, end_date, a
         else:
             return obj
 
+    def compute_dynamic_adaptation_penalty(origin_stats, dest_stats, activity=None):
+        if not origin_stats:
+            return 0.2  # fallback default
+
+        DI_diff = abs(dest_stats.get('DI_mean', 25) - origin_stats.get('DI_mean', 25))
+        T_diff = abs(dest_stats.get('T2M_mean', 25) - origin_stats.get('T2M_mean', 25))
+        RH_diff = abs(dest_stats.get('RH2M_mean', 50) - origin_stats.get('RH2M_mean', 50))
+
+        activity_sensitivity = {
+            'fishing': 1.0,
+            'hiking': 0.8,
+            'festival': 0.6,
+            'generic': 0.7
+        }
+        factor = activity_sensitivity.get(activity, 0.7)
+        penalty = factor * (0.4 * DI_diff / 10 + 0.3 * T_diff / 10 + 0.3 * RH_diff / 20)
+        return float(np.clip(penalty, 0, 1))
+
     if activities is None:
-        activities = ['fishing', 'hiking', 'festival', 'generic']
+        activities = list(list_activities().keys())
 
     # 1️⃣ Fetch climate data
     origin_df = fetch_origin_climate(origin_lat, origin_lon, start_date, end_date)
@@ -371,7 +446,7 @@ def analysis(origin_lat, origin_lon, dest_lat, dest_lon, start_date, end_date, a
     activities_dict = {}
     for activity in activities:
         weight = activity_weights(dest_stats, activity)
-        adaptation_penalty = 0.2  # example, can be dynamic
+        adaptation_penalty = compute_dynamic_adaptation_penalty(origin_stats, dest_stats, activity)
         comfort_index = compute_comfort_index(dest_stats, weight, adaptation_penalty)
         activity_risks = compute_risks(dest_stats, activity_weight=weight)
         activities_dict[activity] = {
@@ -398,13 +473,16 @@ def analysis(origin_lat, origin_lon, dest_lat, dest_lon, start_date, end_date, a
             "start_date": start_date,
             "end_date": end_date,
             "historical_years": HISTORICAL_YEARS,
-            "notes": "DI calculated using NASA POWER data; missing precipitation treated as 0"
+            "notes": "DI calculated using NASA POWER data; missing precipitation treated as 0; adaptation penalty dynamic"
         }
     }
 
+    # 5️⃣ Optionally add chart/graph data
+    if include_graphs:
+        result_json['graphs'] = generate_graph_data(origin_df, dest_df)
+
     # ✅ Convert all NumPy types to native Python types
     return convert_numpy(result_json)
-
 
 # ----------------- Multi-Scenario Test Block -----------------
 if __name__ == "__main__":

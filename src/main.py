@@ -1,6 +1,7 @@
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
 from routes import analyse
+from routes import ai
 
 app = FastAPI(
     title="NASA Space App Backend",
@@ -45,3 +46,4 @@ def health_check():
 
 # Include the router from routes/analyse.py
 app.include_router(analyse.router)
+app.include_router(ai.router)
