@@ -1,93 +1,3 @@
-// === probabilityChart.js ===
-// Fetch NASA POWER API data and draw line chart
-
-// async function fetchData() {
-//   // ==== Dynamic variables ====
-//   const latitude = 23.8041;
-//   const longitude = 90.4152;
-//   const parameter = "T2M";   // Example: "T2M" temperature
-//   const temporal = "daily";  // Options: "hourly", "daily"
-//   const start = 20240101;
-//   const end = 20240331;
-
-//   // ==== Build URL ====
-//   const url = `https://power.larc.nasa.gov/api/temporal/${temporal}/point?` +
-//               `start=${start}&end=${end}&latitude=${latitude}&longitude=${longitude}` +
-//               `&community=ag&parameters=${parameter}&format=json&units=metric`;
-
-//   const response = await fetch(url);
-//   const content = await response.json();
-
-//   // ==== Extract data ====
-//   const dataDict = content.properties.parameter[parameter];
-//   const dataset = Object.entries(dataDict).map(([date, value]) => ({
-//     date: temporal === "daily" ? d3.timeParse("%Y%m%d")(date) :
-//           temporal === "hourly" ? d3.timeParse("%Y%m%d%H")(date) :
-//           d3.timeParse("%Y%m")(date),
-//     value: +value
-//   }));
-
-//   drawLineChart(dataset, parameter);
-//   drawBoxPlot(dataset, parameter);
-// }
-
-// // === Draw line chart ===
-// function drawLineChart(dataset, parameter) {
-//   const width = 928;
-//   const height = 500;
-//   const marginTop = 20;
-//   const marginRight = 30;
-//   const marginBottom = 30;
-//   const marginLeft = 50;
-
-//   // X & Y scales
-//   const x = d3.scaleUtc(d3.extent(dataset, d => d.date), [marginLeft, width - marginRight]);
-//   const y = d3.scaleLinear([0, d3.max(dataset, d => d.value)], [height - marginBottom, marginTop]);
-
-//   // Line generator
-//   const line = d3.line()
-//     .x(d => x(d.date))
-//     .y(d => y(d.value));
-
-//   // Container
-//   const svg = d3.select("#linechart-container")
-//     .append("svg")
-//     .attr("width", width)
-//     .attr("height", height);
-
-//   // X axis
-//   svg.append("g")
-//     .attr("transform", `translate(0,${height - marginBottom})`)
-//     .call(d3.axisBottom(x).ticks(width / 80).tickSizeOuter(0));
-
-//   // Y axis
-//   svg.append("g")
-//     .attr("transform", `translate(${marginLeft},0)`)
-//     .call(d3.axisLeft(y).ticks(height / 40))
-//     .call(g => g.select(".domain").remove())
-//     .call(g => g.selectAll(".tick line").clone()
-//       .attr("x2", width - marginLeft - marginRight)
-//       .attr("stroke-opacity", 0.1))
-//     .call(g => g.append("text")
-//       .attr("x", -marginLeft)
-//       .attr("y", 10)
-//       .attr("fill", "currentColor")
-//       .attr("text-anchor", "start")
-//       .text(`↑ ${parameter}`));
-
-//   // Line path
-//   svg.append("path")
-//     .datum(dataset)
-//     .attr("fill", "none")
-//     .attr("stroke", "steelblue")
-//     .attr("stroke-width", 1.5)
-//     .attr("d", line);
-// }
-
-// fetchData();
-
-
-
 async function fetchData() {
   const parameter = "T2M";
 
@@ -177,4 +87,5 @@ function drawLineChart(dataset, parameter) {
 }
 
 fetchData();
+
 
