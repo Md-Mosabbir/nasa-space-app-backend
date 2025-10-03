@@ -50,7 +50,7 @@ def fetch_origin_climate(lat, lon, start_date, end_date):
         df = pd.DataFrame(param_block)
         df.index = pd.to_datetime(df.index, format="%Y%m%d")
 
-        # ✅ Handle missing data
+        
         df.replace([-999.0, -999.9], np.nan, inplace=True)
         # Precipitation: treat missing as 0
         if 'PRECTOT' in df.columns:
@@ -110,7 +110,7 @@ def fetch_destination_historical(lat, lon, start_date, end_date, num_years=HISTO
         df = pd.DataFrame(param_block)
         df.index = pd.to_datetime(df.index, format="%Y%m%d")
 
-        # ✅ Handle missing data
+        
         df.replace([-999.0, -999.9], np.nan, inplace=True)
         # Precipitation: treat missing as 0
         if 'PRECTOT' in df.columns:
@@ -153,19 +153,19 @@ def compute_statistics(dest_df, origin_stats=None):
         stats[f"{param}_p90"] = np.percentile(dest_df[param], 90)
         stats[f"{param}_p10"] = np.percentile(dest_df[param], 10)
 
-    # 2️⃣ Daily Discomfort Index (DI) using proven formula
+
     # DI = T - 0.55 * (1 - RH/100) * (T - 14.5)
     DI_daily = dest_df['T2M'] - 0.55 * (1 - dest_df['RH2M']/100) * (dest_df['T2M'] - 14.5)
     stats['DI_mean'] = DI_daily.mean()
     stats['DI_std'] = DI_daily.std()
 
-    # 3️⃣ Precipitation probability
+
     stats['precip_prob'] = (dest_df['PRECTOTCORR'] > 0).mean()
 
-    # 4️⃣ Wind mean
+
     stats['wind_mean'] = dest_df['WS10M'].mean()
 
-    # 5️⃣ Optional: Relative to origin stats (if provided)
+
     if origin_stats:
         stats['T2M_relative'] = stats['T2M_mean'] - origin_stats.get('T2M_mean', stats['T2M_mean'])
         stats['RH2M_relative'] = stats['RH2M_mean'] - origin_stats.get('RH2M_mean', stats['RH2M_mean'])
@@ -233,12 +233,12 @@ def compute_adaptation_penalty(origin_stats, dest_stats, activity=None):
     if not origin_stats:
         return 0.2  # fallback default
 
-    # 1️⃣ Differences
+
     DI_diff = abs(dest_stats.get('DI_mean', 25) - origin_stats.get('DI_mean', 25))
     T_diff = abs(dest_stats.get('T2M_mean', 25) - origin_stats.get('T2M_mean', 25))
     RH_diff = abs(dest_stats.get('RH2M_mean', 50) - origin_stats.get('RH2M_mean', 50))
     
-    # 2️⃣ Activity sensitivity (optional)
+
     activity_sensitivity = {
         'fishing': 1.0,
         'hiking': 0.8,
@@ -247,7 +247,7 @@ def compute_adaptation_penalty(origin_stats, dest_stats, activity=None):
     }
     factor = activity_sensitivity.get(activity, 0.7)
 
-    # 3️⃣ Compute penalty
+
     penalty = factor * (0.4 * DI_diff / 10 + 0.3 * T_diff / 10 + 0.3 * RH_diff / 20)
     
     # Clip to 0–1
@@ -267,7 +267,7 @@ def generate_graph_data(origin_df, dest_df):
             "T2M": df['T2M'].tolist() if 'T2M' in df.columns else [],
             "RH2M": df['RH2M'].tolist() if 'RH2M' in df.columns else [],
             "WS10M": df['WS10M'].tolist() if 'WS10M' in df.columns else [],
-            # ✅ Corrected precipitation
+
             "PRECTOT": df['PRECTOTCORR'].tolist() if 'PRECTOTCORR' in df.columns else [],
             # Optional: Discomfort Index per day
             "DI": (df['T2M'] - 0.55 * (1 - df['RH2M']/100) * (df['T2M'] - 14.5)).tolist()
@@ -308,7 +308,7 @@ def activity_weights(destination_stats, activity):
     else:
         weight = 1.0  # optimal range
 
-    # Optionally adjust for extreme precipitation
+
     precip_prob = destination_stats.get('precip_prob', 0)
     weight *= (1 - 0.5 * precip_prob)  # reduce weight if raining
 
@@ -335,7 +335,7 @@ def compute_comfort_index(destination_stats, activity_weight, adaptation_penalty
     precip_prob = destination_stats.get('precip_prob', 0)
     wind_mean = destination_stats.get('wind_mean', 2)
 
-    # 1️⃣ Normalize subscores (0 = worst, 1 = best)
+
     # DI subscore: 15–30 optimal range
     DI_score = np.clip((DI - 15) / (30 - 15), 0, 1)
 
@@ -434,15 +434,15 @@ def analysis(origin_lat, origin_lon, dest_lat, dest_lon, start_date, end_date, a
     if activities is None:
         activities = list(list_activities().keys())
 
-    # 1️⃣ Fetch climate data
+
     origin_df = fetch_origin_climate(origin_lat, origin_lon, start_date, end_date)
     dest_df = fetch_destination_historical(dest_lat, dest_lon, start_date, end_date)
 
-    # 2️⃣ Compute statistics
+
     origin_stats = compute_statistics(origin_df) if not origin_df.empty else None
     dest_stats = compute_statistics(dest_df, origin_stats=origin_stats)
 
-    # 3️⃣ Compute activity weights, comfort indices, and per-activity risks
+
     activities_dict = {}
     for activity in activities:
         weight = activity_weights(dest_stats, activity)
@@ -456,7 +456,7 @@ def analysis(origin_lat, origin_lon, dest_lat, dest_lon, start_date, end_date, a
             "risks": activity_risks
         }
 
-    # 4️⃣ Build structured JSON
+
     result_json = {
         "origin": {
             "latitude": origin_lat,
@@ -477,11 +477,11 @@ def analysis(origin_lat, origin_lon, dest_lat, dest_lon, start_date, end_date, a
         }
     }
 
-    # 5️⃣ Optionally add chart/graph data
+
     if include_graphs:
         result_json['graphs'] = generate_graph_data(origin_df, dest_df)
 
-    # ✅ Convert all NumPy types to native Python types
+
     return convert_numpy(result_json)
 
 # ----------------- Multi-Scenario Test Block -----------------
